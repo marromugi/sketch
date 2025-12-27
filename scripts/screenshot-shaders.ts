@@ -5,7 +5,7 @@ import * as fs from "fs";
 // 設定
 const CONFIG = {
   baseUrl: "http://localhost:4321",
-  outputDir: path.join(process.cwd(), "screenshots"),
+  outputDir: path.join(process.cwd(), "public", "og"),
   viewport: { width: 520, height: 520 },
   deviceScaleFactor: 2,
   // シェーダー安定化のための待機時間（ミリ秒）
