@@ -1,0 +1,150 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { ShaderCanvas } from '../components/ShaderCanvas';
+import { hexToU } from '../utils/color';
+
+// Three.js ShaderMaterial用に変換したgrain gradientシェーダー
+const grainGradientShader = `
+uniform float u_time;
+uniform vec2 u_resolution;
+uniform float u_noiseAmount;
+uniform float u_smoothness;
+uniform float u_seed;
+uniform float u_colorMove;
+uniform float u_ellipseScale;
+uniform vec3 u_color1;
+uniform vec3 u_color2;
+uniform vec3 u_color3;
+
+varying vec2 vUv;
+
+const float PI = 3.14159265359;
+
+// ランダム関数
+float random(vec2 st) {
+    vec3 p3 = fract(vec3(st.xyx) * vec3(0.1031, 0.1030, 0.0973));
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+// グレインノイズ
+float grain(vec2 coord, float seed) {
+    return random(coord + seed);
+}
+
+// 滑らかな楕円距離関数
+float ellipse(vec2 uv, vec2 center, vec2 radius, float rotation) {
+    vec2 p = uv - center;
+    float c = cos(rotation);
+    float s = sin(rotation);
+    p = vec2(c * p.x + s * p.y, -s * p.x + c * p.y);
+    return length(p / radius);
+}
+
+// ゆっくり変化するサイン波ベースの動き
+float smoothMove(float t, float seed) {
+    return sin(t * 0.7 + seed * 10.0) * 0.5
+         + sin(t * 0.3 + seed * 5.0) * 0.3
+         + sin(t * 0.13 + seed * 3.0) * 0.2;
+}
+
+void main() {
+    vec2 uv = gl_FragCoord.xy / u_resolution;
+    float aspect = u_resolution.x / u_resolution.y;
+    vec2 aspectUV = vec2(uv.x * aspect, uv.y);
+
+    float time = u_time;
+    float moveAmount = u_colorMove * 0.01;
+    float smth = u_smoothness * 0.01;
+    float scale = u_ellipseScale * 0.01;
+
+    // バウハウスカラー
+    vec3 color1 = u_color1;
+    vec3 color2 = u_color2;
+    vec3 color3 = u_color3;
+
+    // === 3つの幾何学的な形状（楕円）を配置 ===
+
+    // 形状1: 明るい領域（左下から出現）
+    vec2 center1 = vec2(
+        0.2 + smoothMove(time * 0.5, u_seed) * moveAmount * 0.8,
+        0.3 + smoothMove(time * 0.4, u_seed + 1.0) * moveAmount * 0.6
+    ) * vec2(aspect, 1.0);
+    vec2 radius1 = vec2(
+        (0.6 + sin(time * 0.2 + u_seed) * 0.15 * moveAmount) * scale,
+        (0.8 + cos(time * 0.15 + u_seed) * 0.2 * moveAmount) * scale
+    );
+    float rot1 = time * 0.1 + u_seed;
+    float dist1 = ellipse(aspectUV, center1, radius1, rot1);
+
+    // 形状2: 赤い領域（中央付近）
+    vec2 center2 = vec2(
+        0.5 + smoothMove(time * 0.35, u_seed + 2.0) * moveAmount * 0.5,
+        0.5 + smoothMove(time * 0.45, u_seed + 3.0) * moveAmount * 0.5
+    ) * vec2(aspect, 1.0);
+    vec2 radius2 = vec2(
+        (0.5 + sin(time * 0.25 + u_seed + 1.0) * 0.1 * moveAmount) * scale,
+        (0.6 + cos(time * 0.2 + u_seed + 1.0) * 0.15 * moveAmount) * scale
+    );
+    float rot2 = -time * 0.08 + u_seed * 2.0;
+    float dist2 = ellipse(aspectUV, center2, radius2, rot2);
+
+    // 形状3: 暗い領域（右上）
+    vec2 center3 = vec2(
+        0.8 + smoothMove(time * 0.3, u_seed + 4.0) * moveAmount * 0.4,
+        0.7 + smoothMove(time * 0.38, u_seed + 5.0) * moveAmount * 0.4
+    ) * vec2(aspect, 1.0);
+    vec2 radius3 = vec2(
+        (0.7 + sin(time * 0.18 + u_seed + 2.0) * 0.12 * moveAmount) * scale,
+        (0.5 + cos(time * 0.22 + u_seed + 2.0) * 0.1 * moveAmount) * scale
+    );
+    float rot3 = time * 0.12 + u_seed * 3.0;
+    float dist3 = ellipse(aspectUV, center3, radius3, rot3);
+
+    // === 滑らかなブレンド ===
+    float blend1 = smoothstep(1.0 + smth, 1.0 - smth, dist1);
+    float blend2 = smoothstep(1.0 + smth, 1.0 - smth, dist2);
+    float blend3 = smoothstep(1.0 + smth, 1.0 - smth, dist3);
+
+    // 色を重ねる
+    vec3 color = color3; // ベースは暗い色
+    color = mix(color, color2, blend2); // 赤を重ねる
+    color = mix(color, color1, blend1); // 明るい色を重ねる
+
+    // 暗い領域を追加で重ねる
+    color = mix(color, color3, blend3 * 0.7);
+
+    // === 固定グレインノイズ ===
+    float n = grain(gl_FragCoord.xy, u_seed);
+    float noiseStrength = u_noiseAmount * 0.001;
+
+    color += (n - 0.5) * noiseStrength;
+
+    float darkness = 1.0 - dot(color, vec3(0.299, 0.587, 0.114));
+    color += (n - 0.5) * noiseStrength * darkness * 0.5;
+
+    gl_FragColor = vec4(color, 1.0);
+}
+`;
+
+// カスタムuniforms
+const uniforms = {
+  u_noiseAmount: { value: 50.0 },
+  u_smoothness: { value: 30.0 },
+  u_seed: { value: 1.0 },
+  u_colorMove: { value: 50.0 },
+  u_ellipseScale: { value: 100.0 },
+  u_color1: { value: hexToU("#DC0E0E") },   // 明るいベージュ
+  u_color2: { value: hexToU("#62109F") },    // 赤
+  u_color3: { value: hexToU("#FFDEB9") },   // 暗い青
+};
+---
+
+<Layout>
+  <ShaderCanvas
+    client:load
+    fragmentShader={grainGradientShader}
+    uniforms={uniforms}
+    size={{ mode: 'viewport' }}
+  />
+</Layout>

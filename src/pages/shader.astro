@@ -1,0 +1,43 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { ShaderCanvas } from '../components/ShaderCanvas';
+
+const gradientShader = `
+uniform float u_time;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+varying vec2 vUv;
+
+void main() {
+  vec2 uv = vUv;
+
+  // Animated gradient colors
+  vec3 color1 = vec3(0.1, 0.2, 0.5);  // Deep blue
+  vec3 color2 = vec3(0.8, 0.3, 0.5);  // Pink
+  vec3 color3 = vec3(0.2, 0.7, 0.6);  // Teal
+
+  // Create flowing gradient with time animation
+  float t = u_time * 0.3;
+  float gradient1 = sin(uv.x * 2.0 + t) * 0.5 + 0.5;
+  float gradient2 = cos(uv.y * 2.0 - t * 0.7) * 0.5 + 0.5;
+
+  // Mix colors
+  vec3 col = mix(color1, color2, gradient1);
+  col = mix(col, color3, gradient2 * 0.5);
+
+  // Add subtle diagonal wave
+  float wave = sin((uv.x + uv.y) * 4.0 + t * 1.5) * 0.1;
+  col += wave;
+
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+---
+
+<Layout>
+	<ShaderCanvas
+		client:load
+		fragmentShader={gradientShader}
+		size={{ mode: 'viewport' }}
+	/>
+</Layout>

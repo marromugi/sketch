@@ -1,0 +1,220 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { ShaderCanvas } from '../components/ShaderCanvas';
+import { hexToU, hexToUniform } from '../utils/color';
+
+// Three.js ShaderMaterial用 - 最適化版 tube gradientシェーダー
+const tubeGradientShader = `
+uniform vec2 u_resolution;
+uniform vec3 u_color1;      // グラデーション色1（メイン色）
+uniform vec3 u_color2;      // グラデーション色2（フェード色）
+uniform vec3 u_bgColor;     // 背景色
+uniform float u_rotationZ;  // Z軸回転角度（ラジアン）
+uniform float u_grainEnabled; // グレインノイズ有効フラグ（0.0 or 1.0）
+
+varying vec2 vUv;
+
+// ヘリックスパラメータ
+const float HELIX_RADIUS = 1.0;      // らせんの半径
+const float HELIX_PITCH = 0.45;      // Y方向の進み（1ラジアンあたり）
+const float HELIX_FREQ = 1.2;        // 角周波数
+const float HELIX_Z_SCALE = 0.2;     // Z方向のスケール
+const float PATH_LENGTH = 28.0;
+const float TUBE_RADIUS = 0.45;
+
+// ノイズ関数（グレイン用）
+float tubeHash(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+// 3Dパス上の点を取得（バネ状の曲線）
+vec3 getPathPoint(float t) {
+    float angle = t * HELIX_FREQ;
+    float x = sin(angle) * HELIX_RADIUS;
+    float y = t * HELIX_PITCH - (PATH_LENGTH * HELIX_PITCH * 0.5);
+    float z = cos(angle) * HELIX_Z_SCALE;
+    return vec3(x, y, z);
+}
+
+// 解析的な接線ベクトル
+vec3 getPathTangent(float t) {
+    float angle = t * HELIX_FREQ;
+    float dx = cos(angle) * HELIX_RADIUS * HELIX_FREQ;
+    float dy = HELIX_PITCH;
+    float dz = -sin(angle) * HELIX_Z_SCALE * HELIX_FREQ;
+    return normalize(vec3(dx, dy, dz));
+}
+
+// Y座標からtを推定（解析的初期推定）
+float estimateT(vec3 p) {
+    float t = (p.y + PATH_LENGTH * HELIX_PITCH * 0.5) / HELIX_PITCH;
+    return clamp(t, 0.0, PATH_LENGTH);
+}
+
+// Newton法で最近接点のtを求める（少ないイテレーション）
+float refineClosestT(vec3 p, float initialT) {
+    float t = initialT;
+
+    for (int i = 0; i < 4; i++) {
+        vec3 pathPoint = getPathPoint(t);
+        vec3 diff = p - pathPoint;
+        vec3 tangent = getPathTangent(t);
+        float f = dot(diff, tangent);
+        if (abs(f) < 0.001) break;
+        t = clamp(t + f * 0.6, 0.0, PATH_LENGTH);
+    }
+
+    return t;
+}
+
+// 最適化されたヘリックスSDF（ループなし）
+vec2 sdHelixFast(vec3 p) {
+    // Y座標から初期tを解析的に推定
+    float t = estimateT(p);
+
+    // Newton法で精緻化（4回のみ）
+    t = refineClosestT(p, t);
+
+    vec3 nearestPoint = getPathPoint(t);
+    float dist = length(p - nearestPoint) - TUBE_RADIUS;
+
+    return vec2(dist, t);
+}
+
+// 解析的な法線計算（SDFの勾配ではなく幾何学的に計算）
+vec3 calcTubeNormalFast(vec3 p, float pathT) {
+    vec3 pathPoint = getPathPoint(pathT);
+    vec3 tangent = getPathTangent(pathT);
+
+    // 点からパス上の最近接点へのベクトル（チューブ表面の法線）
+    vec3 toPoint = p - pathPoint;
+    // 接線成分を除去
+    vec3 normal = toPoint - tangent * dot(toPoint, tangent);
+    return normalize(normal);
+}
+
+// バウンディングボックスチェック用：レイと円柱の交差判定
+bool intersectBoundingCylinder(vec3 ro, vec3 rd, float radius, float halfHeight) {
+    // XZ平面での円との交差（無限円柱）
+    float a = rd.x * rd.x + rd.z * rd.z;
+    float b = 2.0 * (ro.x * rd.x + ro.z * rd.z);
+    float c = ro.x * ro.x + ro.z * ro.z - radius * radius;
+
+    float discriminant = b * b - 4.0 * a * c;
+    if (discriminant < 0.0) return false;
+
+    float sqrtD = sqrt(discriminant);
+    float t1 = (-b - sqrtD) / (2.0 * a);
+    float t2 = (-b + sqrtD) / (2.0 * a);
+
+    // Y範囲チェック
+    float y1 = ro.y + rd.y * t1;
+    float y2 = ro.y + rd.y * t2;
+
+    return (t2 > 0.0) &&
+           ((abs(y1) < halfHeight && t1 > 0.0) || abs(y2) < halfHeight);
+}
+
+void main() {
+    vec2 uv = (gl_FragCoord.xy - u_resolution * 0.5) / min(u_resolution.x, u_resolution.y);
+
+    // 背景色
+    vec3 bgColor = u_bgColor;
+
+    // レイマーチング設定
+    vec3 ro = vec3(0.0, 0.0, 3.5);
+    vec3 rd = normalize(vec3(uv, -1.0));
+
+    // Z軸回転を適用
+    float cosZ = cos(u_rotationZ);
+    float sinZ = sin(u_rotationZ);
+    rd.xy = vec2(rd.x * cosZ - rd.y * sinZ, rd.x * sinZ + rd.y * cosZ);
+
+    vec3 col = bgColor;
+
+    // バウンディングボックス早期リターン
+    float boundRadius = HELIX_RADIUS + TUBE_RADIUS + 0.2;
+    float boundHalfHeight = PATH_LENGTH * HELIX_PITCH * 0.5 + TUBE_RADIUS + 0.5;
+
+    if (!intersectBoundingCylinder(ro, rd, boundRadius, boundHalfHeight)) {
+        // グレインのみ適用して終了
+        if (u_grainEnabled > 0.5) {
+            float grain = tubeHash(gl_FragCoord.xy);
+            col += (grain - 0.5) * 0.08;
+        }
+        gl_FragColor = vec4(col, 1.0);
+        return;
+    }
+
+    float t = 0.0;
+    bool hit = false;
+    vec3 hitPos;
+    float hitT = 0.0;
+
+    // レイマーチングループ（80回：品質とパフォーマンスのバランス）
+    for (int i = 0; i < 80; i++) {
+        vec3 p = ro + rd * t;
+        vec2 result = sdHelixFast(p);
+        float d = result.x;
+        float pathT = result.y;
+
+        if (d < 0.0005) {  // 元の閾値に戻してエッジを鮮明に
+            hit = true;
+            hitPos = p;
+            hitT = pathT;
+            break;
+        }
+
+        if (t > 12.0) break;
+        t += d * 0.45;  // より細かいステップで精度向上
+    }
+
+    if (hit) {
+        vec3 normal = calcTubeNormalFast(hitPos, hitT);
+
+        // パスのtに沿ったグラデーション
+        float gradientT = hitT * 2.0;
+
+        // sin波で滑らかな周期的グラデーション（0〜1）
+        float gradientFactor = sin(gradientT) * 0.5 + 0.5;
+        gradientFactor = pow(gradientFactor, 0.8);
+
+        // パスに沿って色1 ↔ 色2
+        col = mix(u_color2, u_color1, gradientFactor);
+
+        // ビュー方向でエッジを馴染ませる（強化）
+        float facing = max(dot(normal, -rd), 0.0);
+        float edgeFade = pow(1.0 - facing, 2.5);  // より強いエッジフェード
+        col = mix(col, bgColor, edgeFade * 0.5);  // フェード量を増加
+    }
+
+    // グレインノイズ（静的、オプション）
+    if (u_grainEnabled > 0.5) {
+        float grain = tubeHash(gl_FragCoord.xy);
+        col += (grain - 0.5) * 0.08;
+    }
+
+    gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+// カスタムuniforms
+const uniforms = {
+  u_color1: { value: hexToU('#41644A') },    // 赤系
+  u_color2: { value: hexToU('#0D4715') },    // 青系
+  u_bgColor: { value: hexToU('#EBE1D1') }, // オフホワイト背景
+  u_rotationZ: { value: 4.72 },              // 少し回転
+  u_grainEnabled: { value: 1.0 },           // グレイン有効
+};
+---
+
+<Layout>
+  <ShaderCanvas
+    client:load
+    fragmentShader={tubeGradientShader}
+    uniforms={uniforms}
+    size={{ mode: 'viewport' }}
+  />
+</Layout>
