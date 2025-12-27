@@ -1,11 +1,59 @@
 ---
-import Welcome from '../components/Welcome.astro';
 import Layout from '../layouts/Layout.astro';
 
-// Welcome to Astro! Wondering what to do next? Check out the Astro documentation at https://docs.astro.build
-// Don't want to use any of this? Delete everything in this file, the `assets`, `components`, and `layouts` directories, and start fresh.
+const shaders = [
+  { path: "/shader", name: "shader", screenshot: "/og/shader.png" },
+  { path: "/grain-gradient", name: "grain-gradient", screenshot: "/og/grain-gradient.png" },
+  { path: "/tube-gradient", name: "tube-gradient", screenshot: "/og/tube-gradient.png" },
+];
 ---
 
-<Layout>
-	<Welcome />
+<Layout
+  title="Sketch - Shader Gallery"
+  description="A collection of creative shader experiments and visual explorations"
+  ogImage="/og/default.png"
+>
+  <div class="grid">
+    {shaders.map((shader) => (
+      <a href={shader.path}>
+        <img src={shader.screenshot} alt={shader.name} />
+      </a>
+    ))}
+  </div>
 </Layout>
+
+<style>
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    grid-auto-rows: 120px;
+    gap: 8px;
+    padding: 1em;
+  }
+
+  @media (min-width: 640px) {
+    .grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .grid {
+      grid-template-columns: repeat(3, 1fr);
+    }
+  }
+
+  a {
+    display: block;
+    line-height: 0;
+    border-radius: 1em;
+    overflow: hidden;
+  }
+
+  img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+</style>
